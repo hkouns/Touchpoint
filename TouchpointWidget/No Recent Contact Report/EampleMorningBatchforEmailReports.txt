@@ -1,0 +1,7 @@
+if model.DayOfWeek == 2:
+    model.EmailReport("FollowUpTeamSearch", 205, "heath@nrvhope.com", "Heath Kouns", "Recent New HVC Guests", "RecentGuests")
+    model.EmailReport("BirthdayReportRecipientQuery", 205, "heath@nrvhope.com", "Heath Kouns", "Upcoming HVC Birthdays", "WeeklyBirthdayReport")
+    model.EmailReport("FollowUpTeamSearch", 205, "heath@nrvhope.com", "Heath Kouns", "Recent MIAs after multiple visits", "WeeklyMIAReport")
+    model.EmailReport("FollowUpTeamSearch", 205, "heath@nrvhope.com", "Heath Kouns", "Active Attenders with No Recent Contacts", "NoRecentContactReportPython")
+	
+	model.EmailReport("NameOfQueryForPeopleEmailsWillGoTo", SenderPeopleID, "SenderEmail", "SenderName", "EmailSubject", "PythonScriptThatWillBeSent")

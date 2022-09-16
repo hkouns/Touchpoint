@@ -1,0 +1,62 @@
+<div class="box">
+    <div class="box-title hidden-xs">
+        <h5><a href="#">{{WidgetName}}</a></h5>
+    </div>
+    <a class="visible-xs-block" id="giving-fc-collapse" data-toggle="collapse" href="#{{WidgetId}}-section" aria-expanded="true" aria-controls="{{WidgetId}}-section">
+        <div class="box-title visible-xs-block">
+            <h5>
+                <i class="fa fa-chevron-circle-right"></i>&nbsp;&nbsp;{{WidgetName}}
+            </h5>
+        </div>
+    </a>
+    <div class="collapse in" id="{{WidgetId}}-section">
+        <div class="box-content" style="text-align: -webkit-center;">
+            <div class="chart" style="display: inline-block;width:200px;"></div>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var {{WidgetId}} = function() {
+ 
+        var avg_numperyr = 5.8;
+        var max_numperyr = 9;
+        var min_numperyr = 2;
+        var AvgGoal = 6;
+        var GaugeMax = max_numperyr >= AvgGoal*2 ? max_numperyr : AvgGoal*2;
+        
+        console.log("GaugeMax: ");
+        console.log(GaugeMax);
+        
+        var data = google.visualization.arrayToDataTable([
+          ['Label', 'Value'],
+          ['', 0]
+        ]);
+        
+        var googleNumFormatter = new google.visualization.NumberFormat({
+            prefix: '',
+            fractionDigits: 1
+        });
+        
+        googleNumFormatter.format(data, 1);
+ 
+        var chart = new google.visualization.Gauge(document.querySelector('#{{WidgetId}}-section .chart'));
+        chart.draw(data);
+        
+        var data2 = google.visualization.arrayToDataTable([
+          ['Label', 'Value'],
+          ['', avg_numperyr]
+        ]);
+        googleNumFormatter.format(data2, 1);
+        
+        setInterval(function() {
+          chart.draw(data2);
+        }, 1000);
+        
+    }
+
+    // load and register the chart
+    google.charts.load("current", {packages:["gauge"]});
+    google.charts.setOnLoadCallback({{WidgetId}});
+    WidgetCharts.{{WidgetId}} = {{WidgetId}};
+</script>

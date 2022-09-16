@@ -1,0 +1,104 @@
+<div class="box">
+    <div class="box-title hidden-xs">
+        <h5><a href="#">{{WidgetName}}</a></h5>
+    </div>
+    <a class="visible-xs-block" id="giving-fc-collapse" data-toggle="collapse" href="#{{WidgetId}}-section" aria-expanded="true" aria-controls="{{WidgetId}}-section">
+        <div class="box-title visible-xs-block">
+            <h5>
+                <i class="fa fa-chevron-circle-right"></i>&nbsp;&nbsp;{{WidgetName}}
+            </h5>
+        </div>
+    </a>
+    <div class="collapse in" id="{{WidgetId}}-section">
+        <div class="box-content" style="text-align: -webkit-center;">
+            <div class="chart" style="display: inline-block;width:200px;"></div>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var {{WidgetId}} = function() {
+ 
+        //var avg_numperyr = 5.8;
+        //var max_numperyr = 9;
+        //var min_numperyr = 2;
+        
+        var avg_numperyr = {{{avg_numperyr}}};
+        var max_numperyr = {{{max_numperyr}}};
+        var min_numperyr = {{{min_numperyr}}};
+        
+        console.log("avg_numperyr: ");
+        console.log(avg_numperyr);
+        console.log("avg_numperyr: ");
+        console.log(avg_numperyr);
+        console.log("min_numperyr: ");
+        console.log(min_numperyr);
+        
+        var AvgGoal = 6;
+        
+        var GaugeMax = max_numperyr >= AvgGoal*2 ? max_numperyr : AvgGoal*2;
+        
+        console.log("GaugeMax: ");
+        console.log(GaugeMax);
+        
+        var data = google.visualization.arrayToDataTable([
+          ['Label', 'Value'],
+          ['', 0]
+        ]);
+        
+        var googleNumFormatter = new google.visualization.NumberFormat({
+            prefix: '',
+            fractionDigits: 1
+        });
+        
+        googleNumFormatter.format(data, 1);
+        
+        var oneQuarter = GaugeMax * 0.25;
+        var oneQuarterString = ' ' + oneQuarter.toFixed(1);
+        var oneHalf = (GaugeMax * 0.50);
+        var oneHalfString = ' ' + oneHalf.toFixed(1);
+        var threeFourths = GaugeMax * .75;
+        var threeFourthsString = ' ' + threeFourths.toFixed(1);
+        
+        var options = {
+          height: 200, 
+          max: (GaugeMax),
+          
+          greenFrom: (Math.round(min_numperyr)), greenTo: (Math.round(max_numperyr)), greenColor: '#D3D3D3', //Grey color represents Min-Max
+          yellowFrom: (Math.round(AvgGoal*0.665)), yellowTo: (Math.round(AvgGoal*0.85)), yellowColor: '#F5D762', //arbitrary yellow "warning" zone
+          redFrom: (Math.round(AvgGoal*0.85)), redTo: (Math.round(AvgGoal*1.15)), redColor: '#37968D', //Green Target +/- 15%
+          
+          majorTicks: ['0',oneQuarterString,oneHalfString,threeFourthsString,GaugeMax],
+          animation:{
+            duration: 2000,
+            easing: 'out',
+          }
+          
+        };
+        
+        var chart = new google.visualization.Gauge(document.querySelector('#{{WidgetId}}-section .chart'));
+        chart.draw(data, options);
+        
+        var data2 = google.visualization.arrayToDataTable([
+          ['Label', 'Value'],
+          ['', avg_numperyr]
+        ]);
+        
+        googleNumFormatter.format(data2, 1);
+        
+        setInterval(function() {
+          chart.draw(data2, options);
+        }, 1000);
+        
+        let p6 = document.createElement("p");
+        p6.innerHTML = "<small>(Avg Contacts per Year)</small>";
+        p6.className = "text-center";
+        p6.style = "margin:0px;";
+        document.querySelector('#{{WidgetId}}-section .chart').appendChild(p6);
+    }
+
+    // load and register the chart
+    google.charts.load("current", {packages:["gauge"]});
+    google.charts.setOnLoadCallback({{WidgetId}});
+    WidgetCharts.{{WidgetId}} = {{WidgetId}};
+</script>

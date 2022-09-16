@@ -1,0 +1,38 @@
+import json
+from datetime import datetime
+    
+def Get():
+    sql = Data.SQLContent          #Widget SQL Connection
+    template = Data.HTMLContent    #Widget HTML Connection
+    
+    #sql = model.Content("WidgetTouchpointFrequencySQL")  #SQL Connection for testing
+    sqlresults = q.QuerySqlJsonArray(sql)
+    list = json.loads(sqlresults)
+    #print sql
+    #print sqlresults
+    #print list
+	
+    sum_numperyr = 0.0
+    min_numperyr = 999
+    max_numperyr = 0
+    count = 0
+    
+    for person in list:
+        sum_numperyr = sum_numperyr + person[1] * 1.0
+        count = count + 1
+        
+        if person[1] > max_numperyr: max_numperyr = person[1]
+        if person[1] < min_numperyr: min_numperyr = person[1]
+        
+    avg_numperyr = sum_numperyr / count
+    
+    #print "<br> avg_numperyr " + str(avg_numperyr) 
+    #print "<br> max_numperyr " + str(max_numperyr) 
+    #print "<br> min_numperyr " + str(min_numperyr) 
+    
+    Data.avg_numperyr = avg_numperyr
+    Data.max_numperyr = max_numperyr
+    Data.min_numperyr = min_numperyr
+
+    print model.RenderTemplate(template)    
+Get()

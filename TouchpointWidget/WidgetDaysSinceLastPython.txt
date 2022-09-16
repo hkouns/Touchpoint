@@ -1,0 +1,38 @@
+import json
+from datetime import datetime
+    
+def Get():
+    sql = Data.SQLContent          #Widget SQL Connection
+    template = Data.HTMLContent    #Widget HTML Connection
+    
+    #sql = model.Content("WidgetDaysSinceTouchpointSQL")  #SQL Connection for testing
+    sqlresults = q.QuerySqlJsonArray(sql)
+    list = json.loads(sqlresults)
+    #print sql
+    #print sqlresults
+    #print list
+	
+    sum_daystolast = 0.0
+    min_daystolast = 999
+    max_daystolast = 0
+    count = 0
+    
+    for person in list:
+        sum_daystolast = sum_daystolast + person[1] * 1.0
+        count = count + 1
+        
+        if person[1] > max_daystolast: max_daystolast = person[1]
+        if person[1] < min_daystolast: min_daystolast = person[1]
+        
+    avg_daystolast = sum_daystolast / count
+    
+    #print "<br> avg_daystolast " + str(avg_daystolast) 
+    #print "<br> max_daystolast " + str(max_daystolast) 
+    #print "<br> min_daystolast " + str(min_daystolast) 
+    
+    Data.avg_daystolast = avg_daystolast
+    Data.max_daystolast = max_daystolast
+    Data.min_daystolast = min_daystolast
+
+    print model.RenderTemplate(template)    
+Get()

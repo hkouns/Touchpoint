@@ -1,0 +1,17 @@
+import json
+from datetime import datetime
+
+    
+def Get():
+    sql = Data.SQLContent
+    template = Data.HTMLContent
+
+    list = q.QuerySqlJsonArray(sql)
+
+    Data.results = model.FormatJson(list)
+    
+    #print "<br> Results " + str(Data.results) 
+    
+    print model.RenderTemplate(template)
+    
+Get()

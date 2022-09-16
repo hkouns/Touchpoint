@@ -1,0 +1,181 @@
+#roles=Edit
+
+# Include CSS to make widgets work the same as on the homepage
+
+model.Title = 'Contacts Dashboard'
+page_style = '''
+<style>
+    @media (max-width: 765px){
+        .visible-xs-block {
+            display: block!important;
+        }
+        .box-title.visible-xs-block{
+         display: block!important; 
+        }
+        .box-title.hidden-xs{
+         display: none!important; 
+        }
+    }
+  .visible-xs-block {
+            display: block!important;
+        }
+        .box-title.visible-xs-block{
+         display: block!important; 
+        }
+        .box-title.hidden-xs{
+         display: none!important; 
+        }
+    .list-group {max-height: 215px!important; overflow-y: scroll!important;}
+</style>
+'''
+
+# Include jave script to make widgets work the same as on the homepage... including functions to redraw the widgets on page size change
+page_javascript = ''' 
+<script async="" src="https://www.google-analytics.com/analytics.js"></script>
+    
+<script type="text/javascript"> 
+        var WidgetCharts = {};
+</script>
+    
+<script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"></script>
+
+<script>
+    $('.widget-embed').each(function () {
+        var el = $(this);
+        var url = el.data('url');
+        el.addClass('loading');
+        $.get(url, function (data) {
+            if (data.includes('Error:')) {
+                el.removeClass('loading').addClass('error');
+                el.html("<div class='box'><div class='center bg-warning text-warning'><i class='fa fa-3x fa-exclamation-circle'></i><p style='text-align:center;'>Error loading " + el.data('name') + "<br />Contact your system administrator</p></div></div>")
+            } else {
+                el.html(data);
+                el.removeClass('loading');
+            }
+        }).fail(function () {
+            el.removeClass('loading').addClass('error');
+            el.html("<div class='box'><div class='center bg-warning text-warning'><i class='fa fa-3x fa-exclamation-circle'></i><p style='text-align:center;'>Error loading " + el.data('name') + "<br />Contact your system administrator</p></div></div>")
+        });
+    });
+    
+    $(window).resize(function () {
+        if (this.resizeTO) clearTimeout(this.resizeTO);
+        this.resizeTO = setTimeout(function () {
+            $(this).trigger('resizeEnd');
+            for (var widget in WidgetCharts) {
+                WidgetCharts[widget]();
+            }
+        }, 200);
+    });
+
+    // handle google chart resizing
+    $(window).on('resizeEnd', function () {
+        for (var widget in WidgetCharts) {
+            WidgetCharts[widget]();
+        }
+    });
+</script>
+'''
+
+
+
+pageheader ='<div id="home" class="row">'
+pagefooter = '</div>'
+
+colheader =  '<div class="col-sm-4">'
+colfooter =  '</div>'
+
+widgetclose = '</div>'
+
+
+
+
+#Now we start the actual code for printing the elements of the page.  This starts with style and javascript followed by the "page" header.
+#The "home" div is needed to make the report act like the homepage widgets
+
+print page_style
+print page_javascript
+
+print '<H3 align="center"> Contacts Dashboard </H3>'
+
+print pageheader
+
+# Column 1
+print colheader
+
+#Now we include all of the infomration relative to a specific Widget within the Column
+
+# Column 1 - Widget 1
+
+Data.WidgetName ='Average Contacts Per Regular Attender'
+Data.WidgetNumber = '50'
+Data.WidgetId = 'widget_50'
+Data.SQLContent = model.Content('WidgetTouchpointFrequencySQL')
+Data.HTMLContent = model.Content('WidgetTouchpointFrequencyHTML')
+
+print '<div class="widget-embed" data-url="/HomeWidgets/Embed/'+ Data.WidgetNumber + '" data-name="' + Data.WidgetName + '">'
+print model.CallScript("WidgetTouchpointFrequencyPython")
+print widgetclose
+
+# Column 1 - Widget 2
+
+
+# Column 1 - Widget 3
+
+print colfooter
+
+
+
+# Column 2
+print colheader
+
+
+# Column 2 - Widget 1
+
+Data.WidgetName ='Average Days Since Last Contact for Regular Attenders'
+Data.WidgetNumber = '49'
+Data.WidgetId = 'widget_49'
+Data.SQLContent = model.Content('WidgetDaysSinceTouchpointSQL')
+Data.HTMLContent = model.Content('WidgetDaysSinceTouchpointHTML')
+
+print '<div class="widget-embed" data-url="/HomeWidgets/Embed/'+ Data.WidgetNumber + '" data-name="' + Data.WidgetName + '">'
+print model.CallScript("WidgetDaysSinceTouchpointPython")
+print widgetclose
+
+# Column 2  - Widget 2
+
+
+
+# Column 2  - Widget 3
+
+
+print colfooter
+
+
+# Column 3
+print colheader
+
+# Column 3 - Widget 1
+
+Data.WidgetName ='Variation of Days Since Last Contact'
+Data.WidgetNumber = '23'
+Data.WidgetId = 'widget_23'
+Data.SQLContent = model.Content('WidgetDaysSinceTouchpointHistoSQL')
+Data.HTMLContent = model.Content('WidgetDaysSinceTouchpointHistoHTML')
+
+print '<div class="widget-embed" data-url="/HomeWidgets/Embed/'+ Data.WidgetNumber + '" data-name="' + Data.WidgetName + '">'
+print model.CallScript("WidgetDaysSinceTouchpointHistoPython")
+print widgetclose
+
+
+
+# Column 3  - Widget 2
+
+# Column 3  - Widget 3
+
+
+print colfooter
+
+
+print pagefooter

@@ -1,0 +1,18 @@
+import json
+from datetime import datetime
+    
+def Get():
+    #sql = Data.SQLContent          #Widget SQL Connection
+    #template = Data.HTMLContent    #Widget HTML Connection
+    
+    sql = model.Content("WidgetTouchpointFrequencySQL")  #SQL Connection for testing
+    sqlresults = q.QuerySqlJsonArray(sql)
+    list = json.loads(sqlresults)
+ 
+    print sql
+    print sqlresults
+    print list
+   
+#    print model.RenderTemplate(template)
+    
+Get()

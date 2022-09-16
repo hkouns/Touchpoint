@@ -1,0 +1,136 @@
+DECLARE @AttendanceDaysBack INT = 180;
+DECLARE @MinAttendanceDate DATETIME = DATEADD(DAY, -@AttendanceDaysBack, GETDATE());
+DECLARE @VisitNum INT = 6;
+DECLARE @AttendanceDiv INT = 18; --Div 18 = Worship Attendance
+DECLARE @KeywordList VARCHAR(MAX) = '8,9,11,12,13,14,15,16,34';  -- list of follow up action Keywords
+DECLARE @ContactsDaysBack INT = 365;
+DECLARE @mincontactdate DATETIME = DATEADD(DAY, -@ContactsDaysBack, GETDATE());
+
+;WITH ActiveAttends AS (
+	SELECT 
+		a.PeopleId
+    FROM 
+		dbo.Attend a
+    WHERE a.AttendanceFlag = 1
+        AND a.MeetingDate > @MinAttendanceDate
+        AND (EXISTS(
+            SELECT NULL AS EMPTY
+            FROM dbo.Organizations AS t2, dbo.DivOrg AS t3
+            WHERE ((t3.DivId) = @AttendanceDiv) 
+            AND (t2.OrganizationId = a.OrganizationId) 
+            AND (t3.OrgId = t2.OrganizationId)
+            ))
+
+    GROUP BY 
+		a.PeopleId
+	HAVING 
+		COUNT(a.PeopleId) >= @VisitNum
+),
+
+TaskNoteKeywordCriteria AS (
+	SELECT [Value] AS KeywordId FROM [dbo].[SplitInts](@KeywordList)
+),
+
+MinDaysBack AS(
+SELECT 
+	t1.AboutPersonId as PeopleId,
+    max(t1.DueDate) as mindate
+FROM 
+	dbo.TaskNote AS t1
+INNER JOIN ActiveAttends aa ON t1.AboutPersonId = aa.PeopleId
+
+WHERE 1=1
+	AND t1.IsNote = 1
+    AND EXISTS (
+			SELECT 
+				NULL AS EMPTY
+			FROM 
+				dbo.TaskNoteKeyword AS t2
+					INNER JOIN TaskNoteKeywordCriteria tnk ON t2.KeywordId = tnk.KeywordId
+			WHERE 
+				t2.TaskNoteId = t1.TaskNoteId
+		)
+GROUP BY 
+	t1.AboutPersonId
+)
+
+Select	
+    p.PeopleId as ContacteeID
+    ,p.TitleCode
+    ,p.Name
+    ,p.HomePhone
+    ,p.CellPhone
+    ,p.EmailAddress
+    ,p.PrimaryAddress
+    ,p.PrimaryCity
+    ,p.PrimaryState
+    ,LEFT(p.PrimaryZip, 5) as PrimaryZip
+    ,t2.OwnerId
+    ,t2.OwnerId as ContactorID
+    ,p2.name as ContactorName
+    ,t2.TaskNoteId as ContactID
+    ,CONVERT(varchar, t2.DueDate, 1) as ContactDate
+    ,t2.Notes
+    ,(Select  SUBSTRING(
+        (
+            SELECT ',' + RIGHT(kw.Description, LEN(kw.Description)-8)  AS [text()]
+            FROM dbo.TaskNote tn
+            left JOIN dbo.TaskNoteKeyword tnk ON tn.TaskNoteId = tnk.TaskNoteId
+            left JOIN dbo.Keyword kw ON tnk.KeywordId = kw.KeywordId
+            WHERE tnk.KeywordId > 0
+            and tnk.TaskNoteId = t2.TaskNoteId
+            and kw.Description LIKE 'Reason%' 
+            --ORDER BY tn.TaskNoteId
+            FOR XML PATH ('')
+        ), 2, 1000)) AS ContactReason
+        
+    ,(Select  SUBSTRING(
+        (
+            SELECT ',' + RIGHT(kw.Description, LEN(kw.Description)-7)  AS [text()]
+            FROM dbo.TaskNote tn
+            left JOIN dbo.TaskNoteKeyword tnk ON tn.TaskNoteId = tnk.TaskNoteId
+            left JOIN dbo.Keyword kw ON tnk.KeywordId = kw.KeywordId
+            WHERE tnk.KeywordId > 0
+            and tnk.TaskNoteId = t2.TaskNoteId
+            and (kw.Description LIKE 'Action%' OR kw.Description LIKE 'Type%')
+            --ORDER BY tn.TaskNoteId
+            FOR XML PATH ('')
+        ), 2, 1000)) AS ContactType
+ 
+    ,(Select  SUBSTRING(
+        (
+            SELECT ',' + RIGHT(kw.Description, LEN(kw.Description)-10)  AS [text()]
+            FROM dbo.TaskNote tn
+            left JOIN dbo.TaskNoteKeyword tnk ON tn.TaskNoteId = tnk.TaskNoteId
+            left JOIN dbo.Keyword kw ON tnk.KeywordId = kw.KeywordId
+            WHERE tnk.KeywordId > 0
+            and tnk.TaskNoteId = t2.TaskNoteId
+            and kw.Description LIKE 'Ministry%'
+            --ORDER BY tn.TaskNoteId
+            FOR XML PATH ('')
+        ), 2, 1000)) AS MinistryName
+  
+    
+    ,(Select  SUBSTRING(
+        (
+            SELECT ',' + kw.Description  AS [text()]
+            FROM dbo.TaskNote tn
+            left JOIN dbo.TaskNoteKeyword tnk ON tn.TaskNoteId = tnk.TaskNoteId
+            left JOIN dbo.Keyword kw ON tnk.KeywordId = kw.KeywordId
+            WHERE tnk.KeywordId > 0
+            and tnk.TaskNoteId = t2.TaskNoteId
+            --ORDER BY tn.TaskNoteId
+            FOR XML PATH ('')
+        ), 2, 1000)) AS Keywords
+  
+    ,DATEDIFF(Day, t2.DueDate, GETDATE()) as DaysBack
+FROM 
+	dbo.TaskNote AS t2
+	Inner JOIN MinDaysBack ON t2.AboutPersonId = MinDaysBack.PeopleId AND t2.DueDate = MinDaysBack.mindate
+	Inner JOIN dbo.People AS p ON t2.AboutPersonId = p.PeopleId
+	Inner Join dbo.People AS p2 on t2.OwnerId = p2.PeopleID
+	
+Where
+    (p.Age >= 3) AND (p.Age IS NOT NULL) AND (NOT (p.IsDeceased = 1)) AND (NOT (p.ArchivedFlag = 1))
+    AND
+    DATEDIFF(Day, t2.DueDate, GETDATE()) > 60

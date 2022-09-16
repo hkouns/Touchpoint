@@ -1,0 +1,55 @@
+<div class="box">
+    <div class="box-title hidden-xs">
+        <h5> <a href="https://nrvhope.tpsdb.com/PyScript/NoRecentContact/">{{WidgetName}}</a></h5>
+    </div>
+    <a class="visible-xs-block" id="giving-fc-collapse" data-toggle="collapse" href="#{{WidgetId}}-section" aria-expanded="true" aria-controls="{{WidgetId}}-section">
+        <div class="box-title visible-xs-block">
+            <h5>
+                <i class="fa fa-chevron-circle-right"> </i>  &nbsp;&nbsp;  {{WidgetName}}
+            </h5>
+        </div>
+   </a>
+    <div class="collapse in" id="{{WidgetId}}-section">
+        <div class="box-content center">
+            <div class="chart">
+            </div> 
+        </div>
+    </div>
+</div>
+
+ <script type='text/javascript'>
+      var {{WidgetId}} = function()  {
+        var data = new  google.visualization.DataTable();
+        data.addColumn("number", "Days");
+        
+        data.addRows({{{results}}});
+        
+        var options = {
+            title: 'Days Since Contact',
+            titlePosition: 'none',
+            legend: { position: 'none'},
+            bar: { gap: 0 },
+            histogram: {
+              bucketSize: 10,
+              maxNumBuckets: 10},
+            chartArea: {width: '80%'},
+            vAxis: {title: 'People', textPosition: 'out'},
+            hAxis: {title: 'Days'}
+        };
+
+        var chart = new google.visualization.Histogram(document.querySelector('#{{WidgetId}}-section .chart'));
+
+        chart.draw(data, options);
+       
+        const para = document.createElement("a");
+        para.innerHTML = '<a href="https://nrvhope.tpsdb.com/PyScript/NoRecentContact/"><center><small>(Click for No Recent Contact Report)</small></center></a>';
+        para.className = "text-center";
+        para.style = "margin:0px;";
+
+        document.querySelector('#{{WidgetId}}-section .chart').appendChild(para);
+      }
+      
+    google.charts.load("current", {packages:["corechart"]});
+    google.charts.setOnLoadCallback({{WidgetId}});
+    WidgetCharts.{{WidgetId}} = {{WidgetId}};
+    </script>

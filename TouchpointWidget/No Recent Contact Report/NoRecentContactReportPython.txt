@@ -1,0 +1,95 @@
+# just to follow the pattern of using a table to print the report
+# for this one a table is not really necessary but we use it anyway for a pattern
+fmt0 = '<td><B>{0}</B></td>'
+fmt1 = '<td>{0}</td>'
+fmt2 = '{0}<br/>'
+fmt3 = '<td>{0}/{1}</td>'
+fmt4 = '{0}'
+
+
+# define a shorthand function to make it easy to test for null or empty string
+def HasValue(value):
+    return value is not None and len(value) > 0
+    
+    
+print '<h3><B>Active Attenders with no recent Contact</B></h3>'
+#print 'This report contains a list of those who are listed as Active Attenders but have not had a recorded Contact in over 180 days:</br>'
+print 'This report contains a list of those who ATTENDED 6+ TIMES IN PAST 180 DAYS but have not had a recorded Contact in over 60 days:</br>'
+print '</br>'
+
+print '<i>I would encourage you to follow up with those absent let and them know they are missed.</br>'
+print '<table cellspacing="10"; style="maxwidth:500px;width:auto;display:table;text-align:left">'
+
+# q is the instance of the QueryFunctions class that is passed in
+#people = q.QueryList2("ContactReport_ActiveAttend_NoContactfor180","name",True)
+
+#people = q.QueryList2("ContactReport_CovidActiveAttend_NoContactfor30","name",True)
+
+#sql = model.Content("ActiveAttendersWithNoRecentContacts")
+sql = model.Content("ActiveAttendersWithNoRecentNotes")
+
+people = q.QuerySql(sql)
+
+print '<tr><td><B>___________________________________</B></td><td><B>_______________________________________</B></td><td><B>________________________________</B></td><td><B>________________________________</B></td></tr>'
+print '<tr><td><B>Name</B></td><td><B>Phone/Email</B></td><td><B>Mailing Address</B></td><td><B>Last Contact</B></td></tr>'
+print '<tr><td><B>___________________________________</B></td><td><B>_______________________________________</B></td><td><B>________________________________</B></td><td><B>________________________________</B></td></tr>'
+
+
+if (sum(1 for i in people) > 0):
+    for p in people:
+        
+        print '<tr>'
+        
+        print '<td>'
+
+        if HasValue(p.TitleCode):
+            print '<B><a href="https://nrvhope.tpsdb.com/Person2/' + fmt4.format(p.ContacteeID) + '#tab-touchpoints">' + fmt2.format(p.TitleCode + " " + p.Name) + '</a></B>'
+        else:
+            print '<B><a href="https://nrvhope.tpsdb.com/Person2/' + fmt4.format(p.ContacteeID) + '#tab-touchpoints">' + fmt2.format(p.Name) + '</a></B>'
+        
+        print '</td>'
+        
+        print '<td>'
+    
+        if HasValue(p.HomePhone):
+            print fmt2.format(model.FmtPhone(p.HomePhone, "(h)"))
+    
+        if HasValue(p.CellPhone):
+            print fmt2.format(model.FmtPhone(p.CellPhone, "(c)"))
+    
+        if HasValue(p.EmailAddress):
+            print fmt2.format(p.EmailAddress)
+        
+        print '</td>'
+        
+        print '<td>'
+        
+        if HasValue(p.PrimaryAddress):
+            print fmt2.format(p.PrimaryAddress)
+    
+        if HasValue(p.PrimaryCity):
+            print fmt4.format(p.PrimaryCity + ", ") 
+            if HasValue(p.PrimaryState):
+                print fmt4.format(p.PrimaryState + "  ") 
+                if HasValue(p.PrimaryZip):
+                    print fmt2.format(p.PrimaryZip)
+        
+        print '</td>'
+        
+        print '<td>'
+        
+        
+        if HasValue(p.ContactType):
+            print fmt4.format(p.ContactType + " on ") 
+        if HasValue(p.ContactDate):
+            print fmt4.format(str(p.ContactDate))
+        print '</br>'
+        if HasValue(p.ContactorName):
+            print fmt2.format("By: " + p.ContactorName)
+    
+        print '</td></tr>'
+        
+        
+        print '<tr><td></br></td></tr>'
+    
+print '</table>'

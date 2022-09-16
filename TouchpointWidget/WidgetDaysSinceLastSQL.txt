@@ -1,0 +1,55 @@
+DECLARE @AttendanceDaysBack INT = 180;
+DECLARE @MinAttendanceDate DATETIME = DATEADD(DAY, -@AttendanceDaysBack, GETDATE());
+DECLARE @VisitNum INT = 6;
+DECLARE @AttendanceDiv INT = 18; --Div 18 = Worship Attendance
+DECLARE @KeywordList VARCHAR(MAX) = '8,9,11,12,13,14,15,16,34';
+DECLARE @ContactsDaysBack INT = 365;
+DECLARE @mincontactdate DATETIME = DATEADD(DAY, -@ContactsDaysBack, GETDATE());
+
+;WITH ActiveAttends AS (
+	SELECT 
+		a.PeopleId
+    FROM 
+		dbo.Attend a
+    WHERE a.AttendanceFlag = 1
+        AND a.MeetingDate > @MinAttendanceDate
+        AND (EXISTS(
+            SELECT NULL AS EMPTY
+            FROM dbo.Organizations AS t2, dbo.DivOrg AS t3
+            WHERE ((t3.DivId) = @AttendanceDiv) 
+            AND (t2.OrganizationId = a.OrganizationId) 
+            AND (t3.OrgId = t2.OrganizationId)
+            ))
+    GROUP BY 
+		a.PeopleId
+	HAVING 
+		COUNT(a.PeopleId) >= @VisitNum
+),
+
+TaskNoteKeywordCriteria AS (
+	SELECT [Value] AS KeywordId FROM [dbo].[SplitInts](@KeywordList)
+)
+
+SELECT 
+	t1.AboutPersonId,
+    min(DATEDIFF(Day, DueDate, GETDATE())) as daysback
+FROM 
+	dbo.TaskNote AS t1
+INNER JOIN ActiveAttends aa ON t1.AboutPersonId = aa.PeopleId
+
+WHERE 1=1
+	AND t1.IsNote = 1
+  /*AND t1.DueDate >= @mincontactdate*/
+    AND EXISTS (
+			SELECT 
+				NULL AS EMPTY
+			FROM 
+				dbo.TaskNoteKeyword AS t2
+					INNER JOIN TaskNoteKeywordCriteria tnk ON t2.KeywordId = tnk.KeywordId
+			WHERE 
+				t2.TaskNoteId = t1.TaskNoteId
+		)
+GROUP BY 
+	t1.AboutPersonId
+ORDER BY 
+	t1.AboutPersonId;
