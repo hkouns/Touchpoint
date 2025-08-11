@@ -1,0 +1,125 @@
+import clr
+clr.AddReference("System.Net")
+clr.AddReference("System.Web.Extensions")
+from System.Net import HttpWebRequest, HttpRequestHeader
+from System.Web.Script.Serialization import JavaScriptSerializer
+import base64
+from System.IO import StreamReader
+
+# Planning Center credentials (from developer account)
+APP_ID = "app_id_here"  # Replace with Personal Access Token app_id
+SECRET = "secret_here"  # Replace with Personal Access Token secret
+
+# Encode for Basic Auth (app_id:secret)
+credentials = APP_ID + ":" + SECRET
+encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+# Construct the URL
+BASE_URL = "https://api.planningcenteronline.com/services/v2/people?per_page=25"
+
+def fetch_all_pages(base_url):
+    """Fetch all pages of data from a paginated endpoint."""
+    people = []
+    url = base_url
+    while url:
+        try:
+            webRequest = HttpWebRequest.Create(url)
+            webRequest.Headers.Add(HttpRequestHeader.Authorization, "Basic " + encoded_credentials)
+            response = webRequest.GetResponse()
+            streamReader = StreamReader(response.GetResponseStream())
+            responseData = streamReader.ReadToEnd()
+            streamReader.Close()
+            response.Close()
+
+            serializer = JavaScriptSerializer()
+            data = serializer.DeserializeObject(responseData)
+            people.extend(data["data"] if "data" in data else [])
+
+            # Get next page URL from meta
+            next_url = None
+            if "meta" in data and data["meta"] is not None:
+                if "next" in data["meta"] and data["meta"]["next"] is not None:
+                    if "href" in data["meta"]["next"]:
+                        next_url = data["meta"]["next"]["href"]
+            url = next_url
+
+        except Exception as e:
+            print("Error fetching data from %s: %s" % (url, str(e)))
+            print("Response Body: %s" % responseData if 'responseData' in locals() else "No response")
+            return None
+
+    return people
+
+# Fetch all people
+people = fetch_all_pages(BASE_URL)
+
+# Generate HTML table
+html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Planning Center People</title>
+    <style>
+        table {
+            width: 80%;
+            margin: 20px auto;
+            border-collapse: collapse;
+            font-family: Arial, sans-serif;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            color: #333;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        h1 {
+            text-align: center;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <h1>Planning Center People</h1>
+    <table>
+        <tr>
+            <th>Full Name</th>
+            <th>Max Permissions</th>
+        </tr>
+"""
+
+if people:
+    for person in people:
+        attributes = person["attributes"] if "attributes" in person else {}
+        full_name = attributes["full_name"] if "full_name" in attributes else ""
+        max_permissions = attributes["max_permissions"] if "max_permissions" in attributes else ""
+        if full_name and max_permissions:  # Only include valid entries
+            html += """
+        <tr>
+            <td>%s</td>
+            <td>%s</td>
+        </tr>
+            """ % (full_name, max_permissions)
+else:
+    html += """
+        <tr>
+            <td colspan="2">No data available or error occurred</td>
+        </tr>
+    """
+
+html += """
+    </table>
+</body>
+</html>
+"""
+
+print(html)
