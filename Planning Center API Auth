@@ -1,25 +1,153 @@
 import clr
-clr.AddReference("System.Net")
-clr.AddReference("System.Web.Extensions")
-from System.Net import HttpWebRequest, HttpRequestHeader
+import sys
+import time
+import re
+
+try:
+    clr.AddReference("System.Net")
+    clr.AddReference("System.Web.Extensions")
+except Exception as e:
+    print("Error loading references: %s" % str(e))
+    sys.stdout.flush()
+    raise
+
+from System.Net import HttpWebRequest, HttpRequestHeader, WebException
 from System.Web.Script.Serialization import JavaScriptSerializer
 import base64
 from System.IO import StreamReader
+from System.Text import Encoding
 
-# Planning Center credentials (from developer account)
-APP_ID = "app_id_here"  # Replace with Personal Access Token app_id
-SECRET = "secret_here"  # Replace with Personal Access Token secret
+# Global configuration
+USE_CAMPUS_FILTER = False
 
-# Encode for Basic Auth (app_id:secret)
-credentials = APP_ID + ":" + SECRET
-encoded_credentials = base64.b64encode(credentials.encode()).decode()
+# Planning Center credentials
+APP_ID = "################################################"
+SECRET = "################################################"
 
-# Construct the URL
-BASE_URL = "https://api.planningcenteronline.com/services/v2/people?per_page=25"
+# Encode for Basic Auth
+try:
+    credentials = APP_ID + ":" + SECRET
+    encoded_credentials = base64.b64encode(credentials.encode()).decode()
+except Exception as e:
+    print("Error encoding credentials: %s" % str(e))
+    sys.stdout.flush()
+    raise
+
+# Base URLs
+PEOPLE_URL = "https://api.planningcenteronline.com/people/v2/people?include=emails,name_suffix,phone_numbers,primary_campus"
+PEOPLESUFFIX_URL = "https://api.planningcenteronline.com/people/v2/name_suffixes"	
+SERVICES_BASE_URL = "https://api.planningcenteronline.com/services/v2"
+
+def none_to_empty(value):
+    return "" if value is None else value
+    
+def make_request(method, url, data=None):
+    """Helper function to make HTTP requests."""
+    try:
+        webRequest = HttpWebRequest.Create(url)
+        webRequest.Method = method
+        webRequest.Headers.Add(HttpRequestHeader.Authorization, "Basic " + encoded_credentials)
+        if data:
+            webRequest.ContentType = "application/json"
+            data_bytes = Encoding.UTF8.GetBytes(data)
+            webRequest.ContentLength = len(data_bytes)
+            stream = webRequest.GetRequestStream()
+            stream.Write(data_bytes, 0, len(data_bytes))
+            stream.Close()
+        response = webRequest.GetResponse()
+        streamReader = StreamReader(response.GetResponseStream())
+        responseData = streamReader.ReadToEnd()
+        streamReader.Close()
+        response.Close()
+        return responseData, None
+    except WebException as we:
+        error_msg = "WebException in %s %s: %s" % (method, url, str(we))
+        print(error_msg)
+        sys.stdout.flush()
+        if we.Response:
+            try:
+                streamReader = StreamReader(we.Response.GetResponseStream())
+                responseData = streamReader.ReadToEnd()
+                streamReader.Close()
+                print("Response Body: %s" % responseData)
+                sys.stdout.flush()
+                error_msg += "\nResponse Body: %s" % responseData
+            except Exception as re:
+                print("Error reading response: %s" % str(re))
+                sys.stdout.flush()
+                error_msg += "\nFailed to read response body"
+        return None, error_msg
+    except Exception as e:
+        error_msg = "Error in %s %s: %s" % (method, url, str(e))
+        print(error_msg)
+        sys.stdout.flush()
+        return None, error_msg
+
+def fetch_teams():
+    """Fetch team IDs and names from /services/v2/teams."""
+    url = "%s/teams" % SERVICES_BASE_URL
+    response, error = make_request("GET", url)
+    if error:
+        print("Error fetching teams: %s" % error)
+        sys.stdout.flush()
+        return {}, []
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        team_names = {}
+        team_ids = []
+        # Check if "data" exists and is a list
+        if data.ContainsKey("data") and data["data"] is not None:
+            for team in data["data"]:
+                # Check if team has "id" and "attributes"
+                team_id = team["id"] if team.ContainsKey("id") else ""
+                attributes = team["attributes"] if team.ContainsKey("attributes") else {}
+                team_name = attributes["name"] if attributes.ContainsKey("name") else ""
+                if team_id and team_name:
+                    team_names[team_id] = team_name
+                    team_ids.append(team_id)
+        return team_names, team_ids
+    except Exception as e:
+        print("Error processing teams response: %s" % str(e))
+        sys.stdout.flush()
+        return {}, []
+
+def fetch_team_members(team_names, team_ids):
+    """Fetch all team memberships and return a person_id to team_names mapping."""
+    person_to_teams = {}
+    for team_id in team_ids:
+        url = "%s/teams/%s/people" % (SERVICES_BASE_URL, team_id)
+        time.sleep(0.5)  # Avoid rate limits
+        response, error = make_request("GET", url)
+        if error:
+            if "401" in error or "404" in error:
+                print("Skipping team %s due to error: %s" % (team_id, error))
+                sys.stdout.flush()
+                continue
+            print("Error fetching team members for team %s: %s" % (team_id, error))
+            sys.stdout.flush()
+            continue
+        try:
+            serializer = JavaScriptSerializer()
+            data = serializer.DeserializeObject(response)
+            if data.ContainsKey("data") and data["data"] is not None:
+                for person in data["data"]:
+                    person_id = person["id"] if person.ContainsKey("id") else ""
+                    team_name = team_names[team_id] if team_id in team_names else ""
+                    if person_id not in person_to_teams:
+                        person_to_teams[person_id] = []
+                    if team_name and team_name not in person_to_teams[person_id]:
+                        person_to_teams[person_id].append(team_name)
+        except Exception as e:
+            print("Error processing team members for team %s: %s" % (team_id, str(e)))
+            sys.stdout.flush()
+            continue
+    return person_to_teams
 
 def fetch_all_pages(base_url):
     """Fetch all pages of data from a paginated endpoint."""
     people = []
+    included = []
     url = base_url
     while url:
         try:
@@ -31,27 +159,829 @@ def fetch_all_pages(base_url):
             streamReader.Close()
             response.Close()
 
-            serializer = JavaScriptSerializer()
-            data = serializer.DeserializeObject(responseData)
-            people.extend(data["data"] if "data" in data else [])
+            try:
+                serializer = JavaScriptSerializer()
+                data = serializer.DeserializeObject(responseData)
+            except Exception as e:
+                print("Error deserializing JSON: %s" % str(e))
+                sys.stdout.flush()
+                return None, None, "Error deserializing JSON: %s" % str(e)
 
-            # Get next page URL from meta
+            if data.ContainsKey("data") and data["data"] is not None:
+                people.extend(data["data"])
+            if data.ContainsKey("included") and data["included"] is not None:
+                included.extend(data["included"])
+
             next_url = None
-            if "meta" in data and data["meta"] is not None:
-                if "next" in data["meta"] and data["meta"]["next"] is not None:
-                    if "href" in data["meta"]["next"]:
-                        next_url = data["meta"]["next"]["href"]
+            if (data.ContainsKey("meta") and data["meta"] is not None and
+                data["meta"].ContainsKey("next") and data["meta"]["next"] is not None and
+                data["meta"]["next"].ContainsKey("href")):
+                next_url = data["meta"]["next"]["href"]
             url = next_url
 
+        except WebException as we:
+            error_msg = "WebException: %s" % str(we)
+            print(error_msg)
+            sys.stdout.flush()
+            if we.Response:
+                try:
+                    streamReader = StreamReader(we.Response.GetResponseStream())
+                    responseData = streamReader.ReadToEnd()
+                    streamReader.Close()
+                    print("Response Body: %s" % responseData)
+                    sys.stdout.flush()
+                    error_msg += "\nResponse Body: %s" % responseData
+                except Exception as re:
+                    print("Error reading response: %s" % str(re))
+                    sys.stdout.flush()
+                    error_msg += "\nFailed to read response body"
+            return None, None, error_msg
         except Exception as e:
-            print("Error fetching data from %s: %s" % (url, str(e)))
-            print("Response Body: %s" % responseData if 'responseData' in locals() else "No response")
+            error_msg = "Error fetching data from %s: %s" % (url, str(e))
+            print(error_msg)
+            sys.stdout.flush()
+            return None, None, error_msg
+
+    return people, included, None
+
+def get_PC_people_data(filter_campus=None):
+    """Extract requested fields and team names for each person."""
+    people, included, error = fetch_all_pages(PEOPLE_URL)
+    if not people:
+        print("No people data retrieved")
+        sys.stdout.flush()
+        return None, error
+
+    # Fetch team names and IDs dynamically
+    team_names, team_ids = fetch_teams()
+    if not team_names or not team_ids:
+        print("No team data retrieved")
+        sys.stdout.flush()
+
+    # Fetch team memberships
+    person_to_teams = fetch_team_members(team_names, team_ids)
+    if not person_to_teams:
+        print("No team memberships retrieved")
+        sys.stdout.flush()
+
+    PC_people_list = []
+    for person in people:
+        person_id = person["id"] if person.ContainsKey("id") else ""
+        attributes = person["attributes"] if person.ContainsKey("attributes") else {}
+        first_name = attributes["first_name"] if attributes.ContainsKey("first_name") else ""
+        last_name = attributes["last_name"] if attributes.ContainsKey("last_name") else ""
+        nickname = attributes["nickname"] if attributes.ContainsKey("nickname") else ""
+        birthdate = attributes["birthdate"] if attributes.ContainsKey("birthdate") else ""
+        remote_id = attributes["remote_id"] if attributes.ContainsKey("remote_id") else ""
+
+        # Extract NameSuffix ID
+        name_suffix_id = ""
+        if person.ContainsKey("relationships") and person["relationships"] is not None:
+            relationships = person["relationships"]
+            if relationships.ContainsKey("name_suffix") and relationships["name_suffix"] is not None:
+                name_suffix = relationships["name_suffix"]
+                if name_suffix.ContainsKey("data") and name_suffix["data"] is not None:
+                    name_suffix_data = name_suffix["data"]
+                    if name_suffix_data.ContainsKey("id"):
+                        name_suffix_id = name_suffix_data["id"]
+        
+        if name_suffix_id:
+            url = "%s/%s" % (PEOPLESUFFIX_URL, name_suffix_id)
+
+            response, error = make_request("GET", url)
+
+            if error:
+                if "401" in error or "404" in error:
+                    print("Skipping Suffix %s due to error: %s" % (name_suffix_id, error))
+                    sys.stdout.flush()
+                    name_suffix = ""
+                else:
+                    print("Error fetching suffix for %s: %s" % (name_suffix_id, error))
+                    sys.stdout.flush()
+                    name_suffix = ""
+            else:
+                try:
+                    serializer = JavaScriptSerializer()
+                    data = serializer.DeserializeObject(response)
+                    if data and data.ContainsKey("data") and data["data"] is not None and data["data"].ContainsKey("attributes"):
+                        name_suffix = data["data"]["attributes"]["value"]
+                        #print("name_suffix:")
+                        #print(str(name_suffix))
+                    else:
+                        name_suffix = ""
+                        print("No name suffix data found")
+                except Exception as e:
+                    print("Error processing Suffix for %s: %s" % (name_suffix_id, str(e)))
+                    sys.stdout.flush()
+                    name_suffix = ""
+        else:
+            name_suffix = ""
+
+        # Extract up to two email addresses
+        emails = []
+        for item in included:
+            if (item["type"] == "Email" and
+                item.ContainsKey("relationships") and
+                item["relationships"].ContainsKey("person") and
+                item["relationships"]["person"].ContainsKey("data") and
+                item["relationships"]["person"]["data"].ContainsKey("id") and
+                item["relationships"]["person"]["data"]["id"] == person_id):
+                emails.append(item["attributes"]["address"] if item["attributes"].ContainsKey("address") else "")
+        email1 = emails[0] if len(emails) > 0 else ""
+        email2 = emails[1] if len(emails) > 1 else ""
+
+        # Extract first mobile phone number
+        mobile_phone = ""
+        for item in included:
+            if (item["type"] == "PhoneNumber" and
+                item.ContainsKey("relationships") and
+                item["relationships"].ContainsKey("person") and
+                item["relationships"]["person"].ContainsKey("data") and
+                item["relationships"]["person"]["data"].ContainsKey("id") and
+                item["relationships"]["person"]["data"]["id"] == person_id):
+                attributes = item["attributes"] if item.ContainsKey("attributes") else {}
+                if attributes.ContainsKey("location") and attributes["location"] == "Mobile":
+                    mobile_phone = attributes["national"] if attributes.ContainsKey("national") else ""
+                    break
+                elif not mobile_phone:
+                    mobile_phone = attributes["national"] if attributes.ContainsKey("national") else ""
+                    
+        # Extract Campus ID
+        campus_id = ""
+        campus = ""
+        if person.ContainsKey("relationships") and person["relationships"] is not None:
+            relationships = person["relationships"]
+            if relationships.ContainsKey("primary_campus") and relationships["primary_campus"] is not None:
+                primary_campus = relationships["primary_campus"]
+                if primary_campus.ContainsKey("data") and primary_campus["data"] is not None:
+                    primary_campus_data = primary_campus["data"]
+                    if primary_campus_data.ContainsKey("id"):
+                        campus_id = primary_campus_data["id"]
+                      
+                        # Extract Campus
+                        for item in included:
+                            if (item["type"] == "Campus" and
+                                item.ContainsKey("id") and
+                                item["id"] == campus_id and
+                                item.ContainsKey("attributes") and
+                                item["attributes"].ContainsKey("name")):
+                                    
+                                campus_attributes = item["attributes"]
+                                campus = campus_attributes["name"]
+                                
+
+        # Get team names for this person
+        teams = ", ".join(person_to_teams.get(person_id, []))
+
+        if first_name or last_name:
+            if not USE_CAMPUS_FILTER or (USE_CAMPUS_FILTER and campus == filter_campus):
+                PC_people_list.append((person_id, last_name, first_name, nickname, birthdate, email1, email2, mobile_phone, teams, name_suffix, remote_id, campus))
+
+    # Sort by last_name, then first_name
+    PC_people_list = sorted(PC_people_list, key=lambda x: (x[1], x[2]))
+    return [standardize_pc_person(person) for person in PC_people_list], None
+
+
+			
+def get_TP_people_data():
+	sql = """
+    DECLARE @InvId Int = 221 --- REPLACE WITH YOUR ORG ID!!!
+    
+    Select 
+    om.OrganizationId,
+    c.Description as campus,
+    p.PeopleId,
+    pe1.Data AS planningcenterPID,
+    p.FirstName as first_name,
+    p.LastName as last_name,
+    p.NickName as nickname,
+    p.SuffixCode as name_suffix,
+    FORMAT(p.BDate, 'yyyy-MM-dd') as birthdate,
+    p.CellPhone as mobile_phone, 
+    p.EmailAddress as email1,
+    p.EmailAddress2 as email2,
+    p.SendEmailAddress1,
+    p.SendEmailAddress2,
+    STUFF((
+       SELECT ', ' + mt.Name
+       FROM OrgMemMemTags ommt
+       INNER JOIN MemberTags mt ON mt.Id = ommt.MemberTagId
+       WHERE ommt.OrgId = om.OrganizationId 
+       AND ommt.PeopleId = om.PeopleId
+       FOR XML PATH('')
+    ), 1, 2, '') as subgroups
+    
+    FROM People p
+    LEFT JOIN lookup.Campus c ON p.CampusId = c.Id
+    LEFT JOIN dbo.OrganizationMembers om ON om.PeopleId = p.PeopleId
+    LEFT JOIN PeopleExtra pe1 ON pe1.PeopleId = p.PeopleId AND pe1.Field = 'PlanningCenterPID'
+    where om.OrganizationId = @InvId 
+    ORDER BY p.Name
+	"""
+
+	TP_People = q.QuerySql(sql)
+	#print str(TP_People)
+	TP_People_list = TP_People
+	
+	return [standardize_tp_person(person) for person in TP_People_list]
+
+def standardize_pc_person(person_data):
+    return {
+        'id': person_data[0],
+        'last_name': person_data[1],
+        'first_name': person_data[2],
+        'nickname': person_data[3],
+        'birthdate': person_data[4],
+        'email1': person_data[5],
+        'email2': person_data[6],
+        'mobile_phone': person_data[7],
+        'teams': person_data[8],
+        'name_suffix': person_data[9],
+        'remote_id': person_data[10],
+        'campus': person_data[11],
+        'source': 'PC'
+    }
+    
+    
+def standardize_tp_person(person_data):
+    return {
+        'id': str(person_data.PeopleId),
+        'last_name': person_data.last_name,
+        'first_name': person_data.first_name,
+        'nickname': person_data.nickname,
+        'birthdate': person_data.birthdate,
+        'email1': person_data.email1,
+        'email2': person_data.email2,
+        'mobile_phone': person_data.mobile_phone,
+        'teams': person_data.subgroups,
+        'name_suffix': person_data.name_suffix,
+        'remote_id': person_data.planningcenterPID,
+        'campus': person_data.campus,
+        'source': 'TP'
+    }
+def normalize_phone(phone):
+    """Remove non-digit characters from phone number."""
+    return re.sub(r'\D', '', str(phone))
+def persons_match(tp_person, pc_person):
+    """Check if two person records match based on defined criteria."""
+    if tp_person.get('remote_id') == pc_person.get('id'):
+        return True
+    if (tp_person['first_name'].lower() == pc_person['first_name'].lower() and
+        tp_person['last_name'].lower() == pc_person['last_name'].lower()):
+        if (tp_person.get('email1', '').lower() == pc_person.get('email1', '').lower() or 
+            normalize_phone(tp_person.get('mobile_phone', '')) == normalize_phone(pc_person.get('mobile_phone', '')) or
+            tp_person.get('name_suffix', '').lower() == pc_person.get('name_suffix', '').lower()):
+            return True
+    return False
+    
+
+
+fields_to_compare = ['first_name', 'last_name', 'nickname', 'birthdate', 'email1', 'email2', 'mobile_phone', 'name_suffix', 'remote_id']
+
+def compare_people_data(tp_people, pc_people):
+    comparison_results = []
+    pc_dict = {person['id']: person for person in pc_people}
+    summary = {
+        'tp_count': len(tp_people),
+        'pc_count': len(pc_people),
+        'complete_matches': 0,
+        'records_needing_modification': 0,
+        'tp_updates_count': 0,
+        'pc_updates_count': 0
+    }
+    
+    for tp_person in tp_people:
+        match_found = False
+        pc_person = None
+        updates_to_tp = []
+        updates_to_pc = []
+        
+        # Check if TP person has a PlanningCenterPID (stored in TP's remote_id field)
+        if tp_person.get('remote_id'):
+            if tp_person['remote_id'] in pc_dict:
+                match_found = True
+                pc_person = pc_dict[tp_person['remote_id']]
+            else:
+                # No PC person found with that ID, remove PlanningCenterPID from TP
+                updates_to_tp.append("Remove PlanningCenterPID EV")
+        
+        # If no match found, proceed with fuzzy matching
+        if not match_found:
+            for potential_pc_person in pc_people:
+                if persons_match(tp_person, potential_pc_person):
+                    match_found = True
+                    pc_person = potential_pc_person
+                    break
+        
+        if match_found:
+            # Check if PC's remote_id matches TP's id
+            if str(pc_person.get('remote_id', '')) != str(tp_person['id']):
+                updates_to_pc.append('remote_id')
+            
+            # Check if TP's PlanningCenterPID (remote_id) needs to be updated
+            if str(tp_person.get('remote_id', '')) != str(pc_person['id']):
+                updates_to_tp.append("Update PlanningCenterPID EV")
+            
+            # Compare other fields and determine updates
+            for field in fields_to_compare:
+                if field == 'mobile_phone':
+                    if format_phone_number(tp_person.get(field, '')) != format_phone_number(pc_person.get(field, '')):
+                        updates_to_pc.append(field)
+                elif field in ['email1', 'email2']:
+                    tp_value = tp_person.get(field, '') or ''
+                    pc_value = pc_person.get(field, '') or ''
+                    if tp_value.lower() != pc_value.lower():
+                        updates_to_pc.append(field)
+                elif field != 'remote_id' and field != 'name_suffix' and str(tp_person.get(field, '')).lower() != str(pc_person.get(field, '')).lower():
+                    updates_to_pc.append(field)
+            
+            # Special handling for name_suffix
+            if tp_person.get('name_suffix') and tp_person['name_suffix'] != pc_person.get('name_suffix', ''):
+                updates_to_pc.append('name_suffix')
+            
+            # Compare teams/subgroups
+            tp_teams = set(tp_person.get('teams', '').split(', ')) if tp_person.get('teams') else set()
+            pc_teams = set(pc_person.get('teams', '').split(', ')) if pc_person.get('teams') else set()
+            if tp_teams != pc_teams:
+                updates_to_tp.append("Update Subgroups from PC Teams")
+            
+            people_record_status = "Match Found"
+        else:
+            # No match found, treat as new record
+            people_record_status = "New Record in TP, Add to PC"
+            updates_to_tp.append("Update PlanningCenterPID EV after adding to PC")
+            updates_to_pc = ["Add new record to PC"]
+        
+        # Update summary
+        if updates_to_tp or updates_to_pc:
+            summary['records_needing_modification'] += 1
+            if updates_to_tp:
+                summary['tp_updates_count'] += 1
+            if updates_to_pc:
+                summary['pc_updates_count'] += 1
+        else:
+            summary['complete_matches'] += 1
+        
+        # Determine if TP ID cell should be green
+        tp_id_color = "#90EE90" if pc_person and str(pc_person.get('remote_id', '')) == str(tp_person['id']) else "#FFB3BA"
+        
+        # Determine if PC ID cell should be green
+        pc_id_color = "#90EE90" if pc_person and str(tp_person.get('remote_id', '')) == str(pc_person['id']) else "#FFB3BA"
+        
+        # Append result
+        comparison_results.append({
+            'tp_id': tp_person['id'],
+            'pc_id': pc_person['id'] if pc_person else "",
+            'name': "%s %s" % (tp_person['first_name'], tp_person['last_name']),
+            'people_record_status': people_record_status,
+            'updates_to_tp': ", ".join(updates_to_tp) if updates_to_tp else "No Changes Required",
+            'updates_to_pc': ", ".join(updates_to_pc) if updates_to_pc else "No Changes Required",
+            'tp_id_color': tp_id_color,
+            'pc_id_color': pc_id_color
+        })
+    
+    # Check for PC records not in TP
+    for pc_person in pc_people:
+        if not any(result['pc_id'] == pc_person['id'] for result in comparison_results):
+            comparison_results.append({
+                'tp_id': "",
+                'pc_id': pc_person['id'],
+                'name': "%s %s" % (pc_person['first_name'], pc_person['last_name']),
+                'people_record_status': "PC record to be deleted",
+                'updates_to_tp': "No Changes Required",
+                'updates_to_pc': "Delete PC Record",
+                'tp_id_color': "white",
+                'pc_id_color': "#FFB3BA"
+            })
+            summary['records_needing_modification'] += 1
+            summary['pc_updates_count'] += 1
+    
+    return comparison_results, summary
+
+
+# Function placeholders for update operations
+def update_planningcenter_pid(tp_id, pc_id):
+    """
+    Update the PlanningCenterPID Extra Value in Touchpoint
+    """
+    print("Updating PlanningCenterPID for Touchpoint ID: {} with Planning Center ID: {}".format(tp_id, pc_id))
+    sys.stdout.flush()
+    
+    try:
+        model.AddExtraValueText(tp_id, 'PlanningCenterPID', str(pc_id))
+        print("Successfully updated PlanningCenterPID for Touchpoint ID: {}".format(tp_id))
+        sys.stdout.flush()
+        return True
+    except Exception as e:
+        print("Error updating PlanningCenterPID for Touchpoint ID {}: {}".format(tp_id, str(e)))
+        sys.stdout.flush()
+        return False
+    
+    
+def update_subgroups(tp_id, pc_teams):
+    """
+    Update Touchpoint Subgroups based on Planning Center Teams
+    """
+    print("Updating Subgroups for Touchpoint ID: %s with Planning Center Teams: %s" % (tp_id, pc_teams))
+    sys.stdout.flush()
+    
+    org_id = 221  # Your organization ID
+    
+    # Get current subgroups for the person in Touchpoint
+    current_subgroups = get_current_subgroups(tp_id, org_id)
+    
+    # Convert pc_teams string to a set of teams
+    pc_team_set = set(pc_teams.split(', ')) if pc_teams else set()
+    
+    # Remove subgroups that are not in Planning Center teams
+    for subgroup in current_subgroups:
+        if subgroup not in pc_team_set:
+            try:
+                model.RemoveSubGroup(tp_id, org_id, subgroup)
+                print("Removed subgroup '%s' for Touchpoint ID: %s" % (subgroup, tp_id))
+                sys.stdout.flush()
+            except Exception as e:
+                print("Error removing subgroup '%s' for Touchpoint ID %s: %s" % (subgroup, tp_id, str(e)))
+                sys.stdout.flush()
+    
+    # Add new subgroups from Planning Center teams
+    for team in pc_team_set:
+        if team not in current_subgroups:
+            try:
+                model.AddSubGroup(tp_id, org_id, team)
+                print("Added subgroup '%s' for Touchpoint ID: %s" % (team, tp_id))
+                sys.stdout.flush()
+            except Exception as e:
+                print("Error adding subgroup '%s' for Touchpoint ID %s: %s" % (team, tp_id, str(e)))
+                sys.stdout.flush()
+    
+    print("Subgroup update completed for Touchpoint ID: %s" % tp_id)
+    sys.stdout.flush()
+    
+    
+def get_current_subgroups(tp_id, org_id):
+    """
+    Get current subgroups for a person in Touchpoint
+    """
+    sql = """
+    SELECT mt.Name
+    FROM OrgMemMemTags ommt
+    INNER JOIN MemberTags mt ON mt.Id = ommt.MemberTagId
+    WHERE ommt.OrgId = %s AND ommt.PeopleId = %s
+    """ % (org_id, tp_id)
+    
+    try:
+        result = q.QuerySql(sql)
+        return set(row.Name for row in result)
+    except Exception as e:
+        print("Error fetching current subgroups for Touchpoint ID %s: %s" % (tp_id, str(e)))
+        sys.stdout.flush()
+        return set()
+    
+def update_pc_people_data(pc_id, tp_data):
+    """Update Planning Center People Data with Touchpoint Data."""
+    print("Updating Planning Center ID: %s with Touchpoint data" % pc_id)
+    sys.stdout.flush()
+    url = "https://api.planningcenteronline.com/people/v2/people/%s" % pc_id
+    attributes = {
+        "first_name": tp_data.get('first_name', ''),
+        "last_name": tp_data.get('last_name', ''),
+        "nickname": tp_data.get('nickname', ''),
+        "birthdate": tp_data.get('birthdate', ''),
+        "remote_id": str(tp_data.get('id', ''))  # Always set remote_id to Touchpoint ID
+    }
+    relationships = {}
+    
+    if tp_data.get('name_suffix'):
+        suffix_id = get_name_suffix_id(tp_data['name_suffix'])
+        if suffix_id:
+            relationships['name_suffix'] = {"data": {"type": "NameSuffix", "id": suffix_id}}
+    
+    if tp_data.get('campus'):
+        campus_id = get_campus_id(tp_data['campus'])
+        if campus_id:
+            relationships['primary_campus'] = {"data": {"type": "Campus", "id": campus_id}}
+    
+    # Construct payload
+    payload = {"data": {"type": "Person", "attributes": attributes}}
+    if relationships:
+        payload["data"]["relationships"] = relationships
+    
+    # Update person
+    response, error = make_request("PATCH", url, JavaScriptSerializer().Serialize(payload))
+    if error:
+        print("Error updating person %s: %s" % (pc_id, error))
+        sys.stdout.flush()
+        return False
+    
+    # Update emails
+    update_or_create_email(pc_id, tp_data.get('email1'), tp_data.get('email2') or None)
+    
+    # Update mobile phone
+    if tp_data.get('mobile_phone'):
+        if not update_or_create_phone_number(pc_id, tp_data['mobile_phone']):
+            return False
+    
+    print("Successfully updated Planning Center ID: %s" % pc_id)
+    sys.stdout.flush()
+    return True
+    
+    
+    
+def delete_pc_record(pc_id):
+    """Delete a record from Planning Center."""
+    print("Deleting Planning Center record with ID: %s" % pc_id)
+    sys.stdout.flush()
+    url = "https://api.planningcenteronline.com/people/v2/people/%s" % pc_id
+    response, error = make_request("DELETE", url)
+    if error:
+        print("Error deleting person %s: %s" % (pc_id, error))
+        sys.stdout.flush()
+        return False
+    print("Successfully deleted Planning Center record with ID: %s" % pc_id)
+    sys.stdout.flush()
+    return True
+    
+def add_new_person_to_pc(tp_person):
+    """Add a new person to Planning Center based on Touchpoint data."""
+    print("Adding new person to Planning Center: %s %s" % (tp_person['first_name'], tp_person['last_name']))
+    sys.stdout.flush()
+    url = "https://api.planningcenteronline.com/people/v2/people"
+    attributes = {
+        "first_name": tp_person.get('first_name', ''),
+        "last_name": tp_person.get('last_name', ''),
+        "nickname": tp_person.get('nickname', ''),
+        "birthdate": tp_person.get('birthdate', ''),
+        "remote_id": tp_person.get('id', '')  # Use Touchpoint ID as remote_id
+    }
+    relationships = {}
+    
+    if tp_person.get('name_suffix'):
+        suffix_id = get_name_suffix_id(tp_person['name_suffix'])
+        if suffix_id:
+            relationships['name_suffix'] = {"data": {"type": "NameSuffix", "id": suffix_id}}
+    
+    if tp_person.get('campus'):
+        campus_id = get_campus_id(tp_person['campus'])
+        if campus_id:
+            relationships['primary_campus'] = {"data": {"type": "Campus", "id": campus_id}}
+    
+    payload = {"data": {"type": "Person", "attributes": attributes}}
+    if relationships:
+        payload["data"]["relationships"] = relationships
+    
+    response, error = make_request("POST", url, JavaScriptSerializer().Serialize(payload))
+    if error:
+        print("Error adding new person to Planning Center: %s" % error)
+        sys.stdout.flush()
+        return None
+    
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        pc_id = data["data"]["id"] if (data.ContainsKey("data") and data["data"].ContainsKey("id")) else None
+        if not pc_id:
+            print("No person ID returned from Planning Center")
+            sys.stdout.flush()
             return None
+        
+        # Add emails
+        for i, email_field in enumerate(['email1', 'email2'], 1):
+            if tp_person.get(email_field):
+                update_or_create_email(pc_id, tp_person[email_field], i == 1)
+        
+        # Add mobile phone
+        if tp_person.get('mobile_phone'):
+            update_or_create_phone_number(pc_id, tp_person['mobile_phone'])
+        
+        print("Successfully added person to Planning Center with ID: %s" % pc_id)
+        sys.stdout.flush()
+        return pc_id
+    except Exception as e:
+        print("Error processing new person response: %s" % str(e))
+        sys.stdout.flush()
+        return None
 
-    return people
 
-# Fetch all people
-people = fetch_all_pages(BASE_URL)
+def apply_updates(comparison_results):
+    """Apply updates to Planning Center based on comparison results."""
+    for result in comparison_results:
+        tp_id = result['tp_id']
+        pc_id = result['pc_id']
+        updates_to_tp = result['updates_to_tp'].split(', ') if result['updates_to_tp'] != "No Changes Required" else []
+        updates_to_pc = result['updates_to_pc'].split(', ') if result['updates_to_pc'] != "No Changes Required" else []
+        people_record_status = result['people_record_status']
+        
+        if people_record_status == "New Record in TP, Add to PC":
+            tp_person = next((person for person in TP_people_list if person['id'] == tp_id), None)
+            if tp_person:
+                new_pc_id = add_new_person_to_pc(tp_person)
+                if new_pc_id:
+                    update_planningcenter_pid(tp_id, new_pc_id)
+        
+        elif people_record_status == "PC record to be deleted":
+            if pc_id:
+                delete_pc_record(pc_id)
+        
+        elif people_record_status == "Match Found":
+            tp_person = next((person for person in TP_people_list if person['id'] == tp_id), None)
+            if tp_person and pc_id:
+                if updates_to_pc:
+                    update_pc_people_data(pc_id, tp_person)
+                
+                if "Update PlanningCenterPID EV" in updates_to_tp:
+                    update_planningcenter_pid(tp_id, pc_id)
+                
+                if "Update Subgroups from PC Teams" in updates_to_tp:
+                    pc_person = next((person for person in PC_people_list if person['id'] == pc_id), None)
+                    if pc_person:
+                        update_subgroups(tp_id, pc_person.get('teams', ''))
+        
+        time.sleep(0.5)  # Avoid rate limits
+        
+        
+def get_name_suffix_id(suffix_value):
+    """Fetch or create a name_suffix ID for a given suffix value."""
+    url = PEOPLESUFFIX_URL
+    response, error = make_request("GET", url)
+    if error:
+        print("Error fetching name suffixes: %s" % error)
+        sys.stdout.flush()
+        return None
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        if data.ContainsKey("data") and data["data"] is not None:
+            for suffix in data["data"]:
+                if (suffix.ContainsKey("attributes") and
+                    suffix["attributes"].ContainsKey("value") and
+                    suffix["attributes"]["value"].lower() == suffix_value.lower()):
+                    return suffix["id"]
+        # If not found, create new suffix
+        payload = '{"data":{"type":"NameSuffix","attributes":{"value":"%s"}}}' % suffix_value
+        response, error = make_request("POST", url, payload)
+        if error:
+            print("Error creating name suffix %s: %s" % (suffix_value, error))
+            sys.stdout.flush()
+            return None
+        data = serializer.DeserializeObject(response)
+        return data["data"]["id"] if (data.ContainsKey("data") and data["data"].ContainsKey("id")) else None
+    except Exception as e:
+        print("Error processing name suffix: %s" % str(e))
+        sys.stdout.flush()
+        return None
+
+def update_or_create_email(person_id, email1, email2):
+    """Update or create email addresses for a person."""
+    url = "https://api.planningcenteronline.com/people/v2/people/%s/emails" % person_id
+    response, error = make_request("GET", url)
+    if error:
+        print("Error fetching emails for person %s: %s" % (person_id, error))
+        sys.stdout.flush()
+        return False
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        existing_emails = {}
+        if data.ContainsKey("data") and data["data"] is not None:
+            for email in data["data"]:
+                if email.ContainsKey("attributes") and email["attributes"].ContainsKey("address"):
+                    existing_emails[email["attributes"]["address"].lower()] = email["id"]
+        
+        # Update or create email1
+        if email1:
+            if email1.lower() in existing_emails:
+                url = "https://api.planningcenteronline.com/people/v2/people/%s/emails/%s" % (person_id, existing_emails[email1.lower()])
+                payload = '{"data":{"type":"Email","attributes":{"address":"%s","location":"Home","primary":true}}}' % email1
+                response, error = make_request("PATCH", url, payload)
+            else:
+                url = "https://api.planningcenteronline.com/people/v2/people/%s/emails" % person_id
+                payload = '{"data":{"type":"Email","attributes":{"address":"%s","location":"Home","primary":true}}}' % email1
+                response, error = make_request("POST", url, payload)
+            if error:
+                print("Error updating/creating email1 for person %s: %s" % (person_id, error))
+                sys.stdout.flush()
+                return False
+        
+        # Update or create email2
+        if email2:
+            if email2.lower() in existing_emails:
+                url = "https://api.planningcenteronline.com/people/v2/people/%s/emails/%s" % (person_id, existing_emails[email2.lower()])
+                payload = '{"data":{"type":"Email","attributes":{"address":"%s","location":"Work","primary":false}}}' % email2
+                response, error = make_request("PATCH", url, payload)
+            else:
+                url = "https://api.planningcenteronline.com/people/v2/people/%s/emails" % person_id
+                payload = '{"data":{"type":"Email","attributes":{"address":"%s","location":"Work","primary":false}}}' % email2
+                response, error = make_request("POST", url, payload)
+            if error:
+                print("Error updating/creating email2 for person %s: %s" % (person_id, error))
+                sys.stdout.flush()
+                return False
+        
+        # Remove any existing emails that are not email1 or email2
+        for existing_email, email_id in existing_emails.items():
+            if (email1 is None or existing_email != email1.lower()) and (email2 is None or existing_email != email2.lower()):
+                url = "https://api.planningcenteronline.com/people/v2/people/%s/emails/%s" % (person_id, email_id)
+                response, error = make_request("DELETE", url)
+                if error:
+                    print("Error deleting old email for person %s: %s" % (person_id, error))
+                    sys.stdout.flush()
+        
+        return True
+    except Exception as e:
+        print("Error processing emails for person %s: %s" % (person_id, str(e)))
+        sys.stdout.flush()
+        return False
+
+def update_or_create_phone_number(person_id, phone_number):
+    """Update or create a mobile phone number for a person."""
+    # Check if phone number exists
+    url = "https://api.planningcenteronline.com/people/v2/people/%s/phone_numbers" % person_id
+    response, error = make_request("GET", url)
+    if error:
+        print("Error fetching phone numbers for person %s: %s" % (person_id, error))
+        sys.stdout.flush()
+        return False
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        phone_id = None
+        if data.ContainsKey("data") and data["data"] is not None:
+            for phone in data["data"]:
+                if (phone.ContainsKey("attributes") and
+                    phone["attributes"].ContainsKey("number") and
+                    normalize_phone(phone["attributes"]["number"]) == normalize_phone(phone_number)):
+                    phone_id = phone["id"]
+                    break
+        if phone_id:
+            # Update existing phone number
+            url = "https://api.planningcenteronline.com/people/v2/people/%s/phone_numbers/%s" % (person_id, phone_id)
+            payload = '{"data":{"type":"PhoneNumber","attributes":{"number":"%s","location":"Mobile"}}}' % phone_number
+            response, error = make_request("PATCH", url, payload)
+        else:
+            # Create new phone number
+            payload = '{"data":{"type":"PhoneNumber","attributes":{"number":"%s","location":"Mobile"}}}' % phone_number
+            response, error = make_request("POST", url, payload)
+        if error:
+            print("Error updating/creating phone number for person %s: %s" % (person_id, error))
+            sys.stdout.flush()
+            return False
+        return True
+    except Exception as e:
+        print("Error processing phone number for person %s: %s" % (person_id, str(e)))
+        sys.stdout.flush()
+        return False
+
+def get_campus_id(campus_name):
+    """Fetch or create a campus ID for a given campus name."""
+    url = "https://api.planningcenteronline.com/people/v2/campuses"
+    response, error = make_request("GET", url)
+    if error:
+        print("Error fetching campuses: %s" % error)
+        sys.stdout.flush()
+        return None
+    try:
+        serializer = JavaScriptSerializer()
+        data = serializer.DeserializeObject(response)
+        if data.ContainsKey("data") and data["data"] is not None:
+            for campus in data["data"]:
+                if (campus.ContainsKey("attributes") and
+                    campus["attributes"].ContainsKey("name") and
+                    campus["attributes"]["name"].lower() == campus_name.lower()):
+                    return campus["id"]
+        # If not found, create new campus
+        payload = '{"data":{"type":"Campus","attributes":{"name":"%s"}}}' % campus_name
+        response, error = make_request("POST", url, payload)
+        if error:
+            print("Error creating campus %s: %s" % (campus_name, error))
+            sys.stdout.flush()
+            return None
+        data = serializer.DeserializeObject(response)
+        return data["data"]["id"] if (data.ContainsKey("data") and data["data"].ContainsKey("id")) else None
+    except Exception as e:
+        print("Error processing campus: %s" % str(e))
+        sys.stdout.flush()
+        return None
+
+def sort_people_data(people_list):
+    return sorted(people_list, key=lambda x: (x['last_name'].lower(), x['first_name'].lower()))
+    
+    
+def format_phone_number(phone):
+    if not phone:
+        return ""
+    phone = re.sub(r'\D', '', phone)  # Remove non-digit characters
+    if len(phone) == 10:
+        return "({}) {}-{}".format(phone[:3], phone[3:6], phone[6:])
+    elif len(phone) == 11 and phone[0] == '1':
+        return "({}) {}-{}".format(phone[1:4], phone[4:7], phone[7:])
+    else:
+        return phone  # Return original if it doesn't match expected formats
+
+
+
+
+
 
 # Generate HTML table
 html = """
@@ -59,10 +989,10 @@ html = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Planning Center People</title>
+    <title>People Data Comparison</title>
     <style>
         table {
-            width: 80%;
+            width: 95%;
             margin: 20px auto;
             border-collapse: collapse;
             font-family: Arial, sans-serif;
@@ -71,6 +1001,7 @@ html = """
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
+            font-size: 14px;
         }
         th {
             background-color: #f2f2f2;
@@ -82,44 +1013,153 @@ html = """
         tr:hover {
             background-color: #f5f5f5;
         }
-        h1 {
+        h1, h2 {
             text-align: center;
             font-family: Arial, sans-serif;
         }
     </style>
 </head>
 <body>
-    <h1>Planning Center People</h1>
+    <h1>People Data Comparison</h1>
+"""
+# Fetch and process data
+if USE_CAMPUS_FILTER:
+    # You might want to get this from user input or another source
+    filter_campus = "Main Campus"  
+    PC_people_list, pc_error = get_PC_people_data(filter_campus)
+    TP_people_list = get_TP_people_data()
+else:
+    PC_people_list, pc_error = get_PC_people_data()
+    TP_people_list = get_TP_people_data()
+    
+comparison_results, summary = compare_people_data(TP_people_list, PC_people_list)
+
+# Execute updates
+apply_updates(comparison_results)
+
+# Function to generate table HTML
+def generate_table_html(title, people_list, source):
+    sorted_people = sort_people_data(people_list)
+    table_html = """
+    <h2>{0}</h2>
     <table>
         <tr>
-            <th>Full Name</th>
-            <th>Max Permissions</th>
+            <th>ID</th>
+            <th>Last Name</th>
+            <th>First Name</th>
+            <th>Nickname</th>
+            <th>Birthday</th>
+            <th>Email1</th>
+            <th>Email2</th>
+            <th>Mobile Phone</th>
+            <th>Teams/Subgroups</th>
+            <th>Name Suffix</th>
+            <th>Remote ID</th>
+            <th>Campus</th>
         </tr>
-"""
+    """.format(title)
+    
+    if sorted_people:
+        for person in sorted_people:
+            formatted_person = person.copy()
+            formatted_person['mobile_phone'] = format_phone_number(person['mobile_phone'])
+            table_html += """
+            <tr>
+                <td>{id}</td>
+                <td>{last_name}</td>
+                <td>{first_name}</td>
+                <td>{nickname}</td>
+                <td>{birthdate}</td>
+                <td>{email1}</td>
+                <td>{email2}</td>
+                <td>{mobile_phone}</td>
+                <td>{teams}</td>
+                <td>{name_suffix}</td>
+                <td>{remote_id}</td>
+                <td>{campus}</td>
+            </tr>
+            """.format(**dict((k, none_to_empty(v)) for k, v in formatted_person.items()))
+    else:
+        table_html += """
+            <tr>
+                <td colspan="12">No data available or error occurred for {0}</td>
+            </tr>
+        """.format(source)
+    
+    table_html += """
+    </table>
+    """
+    return table_html
 
-if people:
-    for person in people:
-        attributes = person["attributes"] if "attributes" in person else {}
-        full_name = attributes["full_name"] if "full_name" in attributes else ""
-        max_permissions = attributes["max_permissions"] if "max_permissions" in attributes else ""
-        if full_name and max_permissions:  # Only include valid entries
-            html += """
+def generate_comparison_table_html(comparison_results, summary):
+    sorted_results = sorted(comparison_results, key=lambda x: (x['name'].split()[-1].lower(), x['name'].split()[0].lower()))
+    table_html = """
+    <h2>Sync Comparison Results</h2>
+    <table>
         <tr>
-            <td>%s</td>
-            <td>%s</td>
-        </tr>
-            """ % (full_name, max_permissions)
-else:
-    html += """
-        <tr>
-            <td colspan="2">No data available or error occurred</td>
+            <th>Touchpoint ID</th>
+            <th>Planning Center ID</th>
+            <th>Name</th>
+            <th>People Record Status</th>
+            <th>Updates to TP</th>
+            <th>Updates to PC</th>
         </tr>
     """
-
-html += """
+    
+    for result in sorted_results:
+        status_color = "#90EE90" if result['people_record_status'] == "Match Found" else "#FFFFE0" if result['people_record_status'] == "New Record in TP, Add to PC" else "#FFB3BA"
+        
+        tp_updates_color = "#90EE90" if result['updates_to_tp'] == "No Changes Required" else "#FFB3BA"
+        pc_updates_color = "#90EE90" if result['updates_to_pc'] == "No Changes Required" else "#FFB3BA"
+        
+        table_html += """
+        <tr>
+            <td style="background-color: {0};">{1}</td>
+            <td style="background-color: {2};">{3}</td>
+            <td>{4}</td>
+            <td style="background-color: {5};">{6}</td>
+            <td style="background-color: {7};">{8}</td>
+            <td style="background-color: {9};">{10}</td>
+        </tr>
+        """.format(
+            result['tp_id_color'], result['tp_id'] or "",
+            result['pc_id_color'], result['pc_id'] or "",
+            result['name'],
+            status_color, result['people_record_status'],
+            tp_updates_color, result['updates_to_tp'],
+            pc_updates_color, result['updates_to_pc']
+        )
+    
+    table_html += """
     </table>
+    <h3>Summary</h3>
+    <ul>
+        <li>Number of records in Touchpoint: {tp_count}</li>
+        <li>Number of records in Planning Center: {pc_count}</li>
+        <li>Number of complete matches: {complete_matches}</li>
+        <li>Number of records needing modification: {records_needing_modification}</li>
+        <li>Number of Touchpoint updates: {tp_updates_count}</li>
+        <li>Number of Planning Center updates: {pc_updates_count}</li>
+    </ul>
+    """.format(**summary)
+    return table_html
+    
+    
+# Generate TP table
+html += generate_table_html("Touchpoint People Data", TP_people_list, "Touchpoint")
+# Generate PC table
+html += generate_table_html("Planning Center People Data", PC_people_list, "Planning Center")
+
+html += generate_comparison_table_html(comparison_results, summary)
+
+# Add information about campus filter
+if USE_CAMPUS_FILTER:
+    html += "<p><strong>Note:</strong> Data is filtered for campus: {}</p>".format(filter_campus)
+else:
+    html += "<p><strong>Note:</strong> Campus filter is not applied.</p>"
+html += """
 </body>
 </html>
 """
-
 print(html)
+sys.stdout.flush()
