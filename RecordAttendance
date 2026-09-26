@@ -1,0 +1,59 @@
+# ============================================================================
+# Script:   RecordAttendance
+# URL:      https://nrvhope.tpsdb.com/PyScript/RecordAttendance
+#
+# Purpose:
+#   Self check-in. When a logged-in person opens this URL, the script records
+#   them as "attended" for the current meeting of one involvement.
+#
+# How it works:
+#   1. Gets the current church-local time. The server clock may be in a
+#      different time zone, so it converts using the LocalTimeZone setting.
+#   2. Looks for a meeting for OrganizationId that starts between 15 minutes
+#      from now and 60 minutes ago, i.e. from 15 minutes before start until
+#      1 hour after start. Meetings marked "Did Not Meet" are ignored. If more
+#      than one matches, it uses the one that starts closest to now.
+#   3. If it finds a meeting, it marks model.UserPeopleId (the person running
+#      the script) as attended using model.EditPersonAttendance.
+#   4. If no meeting is found, it prints "There is no current meeting."
+#
+# Notes:
+#   - The meeting must already exist in the Meetings table. This script does
+#     not create meetings from the involvement's schedule.
+#   - The person must be logged in. The URL requires a TouchPoint login.
+# ============================================================================
+OrganizationId = 255          # <--  involvement ID in which to record attendance 
+
+from System import TimeZoneInfo, DateTime
+
+# Convert server time to church local time (meetings are stored in local time)
+tz = TimeZoneInfo.FindSystemTimeZoneById(model.Setting("LocalTimeZone", "Central Standard Time"))
+now = TimeZoneInfo.ConvertTime(DateTime.Now, tz)
+
+windowStart = now.AddMinutes(-60).ToString("yyyy-MM-dd HH:mm:ss")  # up to 1 hr after start
+windowEnd   = now.AddMinutes(15).ToString("yyyy-MM-dd HH:mm:ss")   # up to 15 min before start
+nowStr      = now.ToString("yyyy-MM-dd HH:mm:ss")
+
+sql = '''
+SELECT TOP 1 m.MeetingId, m.MeetingDate
+FROM Meetings m
+WHERE m.OrganizationId = {0}
+  AND m.MeetingDate BETWEEN '{1}' AND '{2}'
+  AND ISNULL(m.DidNotMeet, 0) = 0
+ORDER BY ABS(DATEDIFF(minute, m.MeetingDate, '{3}'))
+'''.format(int(OrganizationId), windowStart, windowEnd, nowStr)
+
+mtg = q.QuerySqlTop1(sql)
+
+if mtg is None:
+    print "There is no current meeting for this involvement."
+elif model.UserPeopleId is None:
+    print "You must be logged in to record attendance."
+else:
+    result = model.EditPersonAttendance(mtg.MeetingId, model.UserPeopleId, True)
+    if result is None:
+        print "Could not record attendance."
+    else:
+        print "Thanks for letting us know you are here!"
+        print "<br>"
+        print "Attendance recorded for the meeting at {0}.".format(mtg.MeetingDate)
