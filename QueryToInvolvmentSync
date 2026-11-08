@@ -1,0 +1,551 @@
+#################################################
+# Involvement Membership Sync
+#
+# Synchronizes involvement membership with the
+# results of saved queries or query code.
+# The Query results are the source of truth.
+#
+# Features:
+# - Supports multiple involvement/query combinations
+# - Adds matching people missing from the involvement
+# - Drops filtered members who no longer match
+# - Supports dry runs without membership changes
+# - Checks for conflicting existing memberships
+# - Protects against empty queries and excessive drops
+# - Emails one combined report for batch runs
+# - Prints the report during manual testing
+# - Reports errors and partial progress
+# - Manually added members and leaders are not
+#   automatically exempt from being dropped.
+# - Avoid queries that depend on membership in the
+#   same involvement being synchronized.
+# - Changes are not rolled back if a later step
+#   fails. Review error reports for partial progress.
+# - Prevent overlapping executions of this script.
+# - Configure your church's morning batch to run it;
+#   this script does not schedule itself.
+# - Reports contain People IDs and may contain
+#   technical details. Limit recipients appropriately.
+# - Missing reports require investigation: the script
+#   cannot notify you if it never runs or email fails.
+#
+# Written By: Heath Kouns
+# Email: Heath@nrvhope.com
+#################################################
+
+#################################################
+# SETUP STEPS
+#
+# Update the SETTINGS section before running:
+#
+# 1. SYNC_COMBINATIONS
+#    Replace the example involvement names, org_id
+#    values, and queries with your church's values.
+#    - name: Descriptive label used in the report.
+#    - org_id: Target involvement's database ID.
+#    - query: Saved query name or actual query code
+#      copied from TouchPoint's View Code option.
+#    Add one entry for each involvement to sync.
+#
+#    If a saved query name produces a parsing error,
+#    try its actual query code instead.
+#    Query code recalculates matching people each run,
+#    but later edits to the saved query's rules must
+#    also be copied into this script.
+#
+# 2. EMAIL SETTINGS
+#    EMAIL_RECIPIENT_PEOPLE_IDS:
+#      People IDs of report recipients, not email
+#      addresses. Example: [123, 456]
+#    EMAIL_QUEUED_BY:
+#      People ID of your email coordinator/sender.
+#    EMAIL_FROM_ADDRESS:
+#      Sender address authorized for your site.
+#    EMAIL_FROM_NAME / EMAIL_SUBJECT_PREFIX:
+#      Adjust the report sender name and subject.
+#
+# 3. MEMBERSHIP_SQL
+#    Review the filters for your church's needs.
+#    This script excludes member types 230 and 311,
+#    pending members, deceased people, and archived
+#    people from the membership comparison.
+#    Verify those member-type IDs on your database.
+#    They are NOT involvement IDs.
+#    Keep @p1 as the involvement ID parameter.
+#
+#    Excluded memberships are NOT considered for
+#    dropping. These SQL filters do NOT prevent
+#    people returned by the source query from
+#    being proposed for addition.
+#    Apply any needed eligibility exclusions to
+#    your source queries too.
+#
+# 4. SAFETY SETTINGS
+#    MAX_DROPS:
+#      Maximum drops allowed per involvement per run.
+#    ALLOW_EMPTY:
+#      Keep False unless an empty query should be
+#      allowed to remove all filtered members.
+#      MAX_DROPS still applies.
+#    CONTINUE_ON_ERROR:
+#      False stops later combinations after an error.
+#      True attempts them and includes errors in
+#      the combined report.
+#    INCLUDE_TRACEBACK:
+#      Includes technical error details in reports.
+#
+# 5. TEST BEFORE ENABLING CHANGES
+#    Screen preview:
+#      MANUAL_TEST = True
+#      DRY_RUN = True
+#
+#    Email preview:
+#      MANUAL_TEST = False
+#      DRY_RUN = True
+#
+#    Live sync with emailed report:
+#      MANUAL_TEST = False
+#      DRY_RUN = False
+#
+#    IMPORTANT: MANUAL_TEST controls report delivery
+#    only. DRY_RUN controls membership changes.
+#    Review proposed additions, drops, and safety
+#    warnings before setting DRY_RUN to False.
+#    Test email delivery from the batch context too.
+#################################################
+
+#################################################
+# SETTINGS
+#################################################
+
+# OUTPUT MODE ONLY:
+# True  = Print report to screen; do not email.
+# False = Email report.
+# This setting does NOT control membership changes.
+MANUAL_TEST = False
+
+# MEMBERSHIP CHANGES:
+# True  = Preview only; do not add or drop anyone.
+# False = Apply membership changes.
+DRY_RUN = False
+
+# Safety settings, applied separately to each involvement.
+ALLOW_EMPTY = False
+MAX_DROPS = 50
+
+# False = Stop processing additional combinations on error.
+# True  = Report the error and continue to the next combination.
+CONTINUE_ON_ERROR = False
+
+# Include the full traceback in error reports.
+INCLUDE_TRACEBACK = True
+
+# Email settings.
+# Replace with the People ID(s) of report recipients.
+EMAIL_RECIPIENT_PEOPLE_IDS = [205]
+
+# Replace with the People ID of the email coordinator/sender.
+EMAIL_QUEUED_BY = 205
+
+# Use a sender address authorized for your TouchPoint site.
+EMAIL_FROM_ADDRESS = "Heath@nrvhope.com"
+EMAIL_FROM_NAME = "TouchPoint Membership Sync"
+EMAIL_SUBJECT_PREFIX = "TouchPoint Involvement Sync"
+
+# Add additional combinations to this list.
+SYNC_COMBINATIONS = [
+    {
+        "name": "Regular Attender Directory",
+        "org_id": 230,
+        "query": "Active Attender_Worship"
+    },
+    {
+        "name": "Current Member Directory",
+        "org_id": 231,
+        "query": "MemberStatusId IN ( 10[Member], 60[Remote Member] )"
+    }
+]
+
+
+
+# Membership population to compare against query results.
+#
+# IMPORTANT:
+# MemberTypeId 230 and 311 are member-type exclusions.
+# They are NOT involvement IDs.
+#
+# People excluded here are not considered for dropping.
+# These filters do NOT filter the source query results.
+MEMBERSHIP_SQL = """
+SELECT DISTINCT p.PeopleId
+FROM dbo.People AS p
+WHERE EXISTS (
+    SELECT 1
+    FROM dbo.OrganizationMembers AS om
+    WHERE om.MemberTypeId <> 230
+      AND om.MemberTypeId <> 311
+      AND COALESCE(om.Pending, 0) <> 1
+      AND om.OrganizationId = @p1
+      AND om.PeopleId = p.PeopleId
+)
+  AND NOT (p.IsDeceased = 1)
+  AND NOT (p.ArchivedFlag = 1)
+"""
+
+
+#################################################
+# IMPORTS AND REPORT STORAGE
+#################################################
+
+import traceback
+from datetime import datetime
+
+REPORT_LINES = []
+
+
+#################################################
+# REPORT FUNCTIONS
+#################################################
+
+def log(message):
+    REPORT_LINES.append(unicode(message))
+
+
+def format_ids(people_ids):
+    return ", ".join(str(pid) for pid in sorted(people_ids)) or "(none)"
+
+
+def html_escape(value):
+    return (
+        unicode(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def build_report_html():
+    # Encode braces too, to avoid interpreting logged text
+    # as TouchPoint email replacement codes.
+    text = html_escape(u"\n".join(REPORT_LINES))
+    text = text.replace("{", "&#123;").replace("}", "&#125;")
+
+    return (
+        '<html><body>'
+        '<pre style="white-space: pre-wrap; font-family: monospace;">'
+        + text
+        + '</pre></body></html>'
+    )
+
+
+def get_email_recipient_query():
+    ids = sorted(set(int(pid) for pid in EMAIL_RECIPIENT_PEOPLE_IDS))
+
+    if not ids or any(pid <= 0 for pid in ids):
+        raise Exception(
+            "Set EMAIL_RECIPIENT_PEOPLE_IDS to valid recipient People IDs."
+        )
+
+    return "peopleids='{0}'".format(
+        ",".join(str(pid) for pid in ids)
+    )
+
+
+def validate_email_settings():
+    # Run before any membership changes.
+    if MANUAL_TEST:
+        return
+
+    recipient_query = get_email_recipient_query()
+
+    if int(EMAIL_QUEUED_BY) <= 0:
+        raise Exception("Set EMAIL_QUEUED_BY to a valid People ID.")
+
+    if not EMAIL_FROM_ADDRESS.strip():
+        raise Exception("EMAIL_FROM_ADDRESS is required.")
+
+    # Confirm that the configured recipient records can be resolved.
+    resolved = get_query_people_ids(recipient_query)
+    expected = set(int(pid) for pid in EMAIL_RECIPIENT_PEOPLE_IDS)
+
+    if resolved != expected:
+        raise Exception(
+            "Not all configured email recipient People IDs were resolved."
+        )
+
+
+def deliver_report(has_errors, has_warnings):
+    body = build_report_html()
+
+    if MANUAL_TEST:
+        # TouchPoint renders printed HTML for manual script output.
+        print(body)
+        return
+
+    if has_errors:
+        status = "ERROR"
+    elif has_warnings:
+        status = "WARNING"
+    else:
+        status = "OK"
+
+    mode = "DRY RUN" if DRY_RUN else "LIVE"
+
+    subject = "{0} [{1}] [{2}] {3}".format(
+        EMAIL_SUBJECT_PREFIX,
+        mode,
+        status,
+        datetime.now().strftime("%Y-%m-%d %H:%M")
+    )
+
+    model.Email(
+        get_email_recipient_query(),
+        int(EMAIL_QUEUED_BY),
+        EMAIL_FROM_ADDRESS,
+        EMAIL_FROM_NAME,
+        subject,
+        body
+    )
+
+
+#################################################
+# QUERY FUNCTIONS
+#################################################
+
+def get_involvement_people_ids(org_id):
+    rows = q.QuerySql(MEMBERSHIP_SQL, org_id)
+
+    if rows is None:
+        raise Exception("Membership lookup returned no valid result.")
+
+    return set(int(row.PeopleId) for row in rows)
+
+
+def get_query_people_ids(query):
+    # Accepts saved query names or actual query code.
+    people_ids = q.QueryPeopleIds(query)
+
+    if people_ids is None:
+        raise Exception("Query lookup returned no valid result.")
+
+    return set(int(pid) for pid in people_ids)
+
+
+#################################################
+# SYNC FUNCTION
+#################################################
+
+def sync_involvement(org_id, query, dry_run,
+                     allow_empty, max_drops):
+    org_id = int(org_id)
+
+    if org_id <= 0:
+        raise Exception("A positive involvement ID is required.")
+
+    # Complete reads before making any changes.
+    desired_ids = get_query_people_ids(query)
+    current_ids = get_involvement_people_ids(org_id)
+
+    to_add = desired_ids - current_ids
+    to_drop = current_ids - desired_ids
+
+    log("Query matches: {0}".format(len(desired_ids)))
+    log("Filtered current members: {0}".format(len(current_ids)))
+    log("Unchanged: {0}".format(len(desired_ids & current_ids)))
+
+    log("Proposed additions ({0}): {1}".format(
+        len(to_add), format_ids(to_add)
+    ))
+    log("Proposed drops ({0}): {1}".format(
+        len(to_drop), format_ids(to_drop)
+    ))
+
+    conflicts = [
+        pid for pid in sorted(to_add)
+        if model.InOrg(pid, org_id)
+    ]
+
+    # Check safety rules even during previews, so the report
+    # explains what would block a live run.
+    blockers = []
+
+    if conflicts:
+        blockers.append(
+            "Already in involvement but excluded by membership SQL: {0}"
+            .format(format_ids(conflicts))
+        )
+
+    if not desired_ids and current_ids and not allow_empty:
+        blockers.append(
+            "Empty query would drop all filtered members."
+        )
+
+    if max_drops is not None and len(to_drop) > max_drops:
+        blockers.append(
+            "Proposed drops ({0}) exceed max_drops ({1}).".format(
+                len(to_drop), max_drops
+            )
+        )
+
+    for message in blockers:
+        log("SAFETY BLOCK: {0}".format(message))
+
+    if dry_run:
+        log("PREVIEW ONLY: No membership changes made.")
+
+        if blockers:
+            log("A live run would be blocked by the safety checks above.")
+
+        return bool(blockers)
+
+    if blockers:
+        raise Exception(
+            "Sync blocked by safety checks. No changes made "
+            "for this involvement."
+        )
+
+    add_calls_completed = 0
+    drop_calls_completed = 0
+
+    # Log the attempted operation BEFORE calling TouchPoint.
+    # If it raises, the report shows which operation was in progress.
+    try:
+        for pid in sorted(to_add):
+            log("Requesting ADD: PeopleId {0}".format(pid))
+            model.AddMemberToOrg(pid, org_id)
+            add_calls_completed += 1
+            log("ADD call completed: PeopleId {0}".format(pid))
+
+        for pid in sorted(to_drop):
+            log("Requesting DROP: PeopleId {0}".format(pid))
+            model.DropOrgMember(pid, org_id)
+            drop_calls_completed += 1
+            log("DROP call completed: PeopleId {0}".format(pid))
+
+    finally:
+        log("Completed API calls: {0} adds; {1} drops.".format(
+            add_calls_completed, drop_calls_completed
+        ))
+
+    # Verify the same filtered membership population against
+    # the source-query snapshot taken at the start of this sync.
+    final_ids = get_involvement_people_ids(org_id)
+
+    missing_ids = desired_ids - final_ids
+    extra_ids = final_ids - desired_ids
+
+    if missing_ids or extra_ids:
+        log("Still missing: {0}".format(format_ids(missing_ids)))
+        log("Still extra: {0}".format(format_ids(extra_ids)))
+
+        raise Exception(
+            "Post-sync verification did not match the source-query snapshot."
+        )
+
+    log("VERIFIED: Filtered membership matches the query snapshot.")
+    return False
+
+
+#################################################
+# MAIN
+#################################################
+
+def main():
+    started = datetime.now()
+    has_errors = False
+    has_warnings = False
+    processed_count = 0
+
+    log("TouchPoint Involvement Membership Sync")
+    log("Started: {0} (server time)".format(
+        started.strftime("%Y-%m-%d %H:%M:%S")
+    ))
+    log("Mode: {0}".format("DRY RUN" if DRY_RUN else "LIVE"))
+    log("Report destination: {0}".format(
+        "SCREEN" if MANUAL_TEST else "EMAIL"
+    ))
+
+    # Fail before changes if email configuration is incomplete.
+    # Without valid email settings, this error cannot be emailed.
+    try:
+        validate_email_settings()
+    except Exception:
+        log("CONFIGURATION ERROR:")
+        log(traceback.format_exc())
+        print(build_report_html())
+        raise
+
+    for combination in SYNC_COMBINATIONS:
+        processed_count += 1
+
+        log("")
+        log("=" * 60)
+        log("Involvement: {0}".format(combination["name"]))
+        log("Involvement ID: {0}".format(combination["org_id"]))
+        log("Query: {0}".format(combination["query"]))
+        log("=" * 60)
+
+        try:
+            warning = sync_involvement(
+                org_id=combination["org_id"],
+                query=combination["query"],
+                dry_run=DRY_RUN,
+                allow_empty=ALLOW_EMPTY,
+                max_drops=MAX_DROPS
+            )
+            has_warnings = has_warnings or warning
+
+        except Exception as ex:
+            has_errors = True
+            log("ERROR: {0}".format(ex))
+            log(
+                "If writes had started, some changes may already "
+                "have been applied. No rollback is performed."
+            )
+
+            if INCLUDE_TRACEBACK:
+                log(traceback.format_exc())
+
+            if not CONTINUE_ON_ERROR:
+                log("Stopping before remaining combinations.")
+                break
+
+    log("")
+    log("=" * 60)
+    log("Combinations attempted: {0} of {1}".format(
+        processed_count, len(SYNC_COMBINATIONS)
+    ))
+    log("Finished: {0} (server time)".format(
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+    log("Elapsed: {0}".format(datetime.now() - started))
+
+    if has_errors:
+        log("OVERALL RESULT: ERROR - review details above.")
+    elif has_warnings:
+        log("OVERALL RESULT: WARNING - live sync would be blocked.")
+    elif DRY_RUN:
+        log("OVERALL RESULT: Preview completed without detected blockers.")
+    else:
+        log("OVERALL RESULT: Sync completed and verified.")
+
+    try:
+        deliver_report(has_errors, has_warnings)
+    except Exception:
+        # Preserve a visible fallback if email submission fails.
+        log("REPORT DELIVERY FAILED:")
+        log(traceback.format_exc())
+        print(build_report_html())
+        raise
+
+    # Submit the report first, then expose a failure to the caller.
+    if has_errors:
+        raise Exception(
+            "One or more involvement syncs failed. "
+            "See the report for details."
+        )
+
+
+main()
